@@ -1,11 +1,9 @@
 
-
 import streamlit as st
 from PIL import Image
 from transformers import pipeline
-import torch
 from datetime import datetime
-
+import pandas as pd
 
 st.set_page_config(
     page_title="ForgeSight AI",
@@ -14,20 +12,20 @@ st.set_page_config(
 )
 
 st.title("🔍 ForgeSight AI")
-st.subheader("AI-Assisted Manufacturing Inspection")
+st.subheader("Manufacturing Quality Inspection")
 
 st.write(
-    "Upload a manufactured part image to receive an AI-generated "
-    "description and prepare a human-review report."
+    "Analyze product images, record inspector observations, "
+    "and generate inspection reports."
 )
 
 st.warning(
-    "Prototype limitation: image descriptions are not reliable "
-    "manufacturing defect detection. Do not use them to approve "
-    "or reject real products."
+    "AI descriptions are not validated defect detection. "
+    "Human inspection is required for all quality decisions."
 )
 
-@st.cache_resource(show_spinner="Loading the AI model...")
+
+@st.cache_resource
 def load_model():
     return pipeline(
         "image-to-text",
@@ -35,10 +33,24 @@ def load_model():
         device=-1
     )
 
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+if "caption" not in st.session_state:
+    st.session_state.caption = None
+
+if "image_key" not in st.session_state:
+    st.session_state.image_key = None
+
+
 with st.sidebar:
     st.header("Inspection Details")
+
     part_id = st.text_input("Part ID", "PART-001")
     inspector = st.text_input("Inspector name", "Inspector")
+    line_name = st.text_input("Production line", "Line 1")
+
 
 st.header("1. Upload a product image")
 
@@ -56,94 +68,197 @@ if uploaded_file:
         use_container_width=True
     )
 
-    st.header("2. AI image analysis")
+    image_key = (
+        uploaded_file.name,
+        uploaded_file.size
+    )
+
+    if st.session_state.image_key != image_key:
+        st.session_state.image_key = image_key
+        st.session_state.caption = None
+
+    st.header("2. AI image description")
 
     if st.button("Analyze image with AI", type="primary"):
         try:
-            with st.spinner(
-                "Loading the model and analyzing your image. "
-                "The first run may take several minutes..."
-            ):
+            with st.spinner("Analyzing image..."):
                 model = load_model()
                 result = model(image, max_new_tokens=40)
-                caption = result[0]["generated_text"].strip()
 
-            st.session_state["caption"] = caption
-            st.session_state["analyzed_part"] = part_id
-            st.session_state["analysis_time"] = (
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.caption = (
+                result[0]["generated_text"].strip()
             )
 
         except Exception as error:
-            st.error(
-                "The model could not run. The free hosting environment "
-                "may have limited memory, or model setup may have failed."
-            )
-            st.caption(
-                "Check the Streamlit app logs for the technical error."
-            )
+            st.error("Image analysis failed.")
             st.code(str(error)[:1000])
 
-    if "caption" in st.session_state:
-        st.success("AI image description generated")
+    if st.session_state.caption:
+        st.success("AI description generated")
+        st.write(st.session_state.caption)
 
-        st.markdown("### What the AI sees")
-        st.write(st.session_state["caption"])
-
-        st.info(
-            "This is a general image description. It does not confirm "
-            "that the part is defective or defect-free."
+        st.caption(
+            "This is a general image description, not a "
+            "confirmed assessment of product quality."
         )
 
-        st.header("3. Human review")
+        st.header("3. Inspector observations")
 
-        reviewed = st.checkbox(
-            "I have personally reviewed the uploaded image."
+        defect_types = [
+            "Scratch",
+            "Crack",
+            "Dent",
+            "Discoloration",
+            "Deformation",
+            "Missing component",
+            "Surface contamination",
+            "Other",
+            "No visible issue observed"
+        ]
+
+        observations = st.multiselect(
+            "Select observations from your visual inspection",
+            defect_types
         )
 
-        notes = st.text_area(
-            "Inspection notes",
+        severity = st.selectbox(
+            "Observed severity",
+            ["Not assessed", "Low", "Medium", "High"]
+        )
+
+        review_notes = st.text_area(
+            "Inspector notes",
             placeholder=(
-                "Record observations from your own inspection."
+                "Describe the location, appearance, or "
+                "measurements of any suspected defect."
             )
         )
 
-        if reviewed:
-            st.success("Human review marked as complete for this session.")
-
-        report = f"""
-FORGESIGHT AI — IMAGE ANALYSIS REPORT
-
-Part ID: {st.session_state.get("analyzed_part", part_id)}
-Inspector: {inspector}
-Analysis time: {st.session_state.get("analysis_time", "Unknown")}
-
-AI-generated image description:
-{st.session_state["caption"]}
-
-Human review completed: {"Yes" if reviewed else "No"}
-
-Inspector notes:
-{notes if reviewed else "Review not confirmed."}
-
-IMPORTANT:
-The AI generated a general image description.
-It did not perform validated manufacturing defect detection.
-No automated pass/fail decision has been made.
-"""
-
-        st.download_button(
-            "Download analysis report",
-            data=report,
-            file_name="forgesight_analysis_report.txt",
-            mime="text/plain"
+        review_status = st.selectbox(
+            "Inspection review status",
+            [
+                "Pending review",
+                "Reviewed — further testing needed",
+                "Reviewed — no issue observed"
+            ]
         )
 
+        st.caption(
+            "Select 'No visible issue observed' only when appropriate. "
+            "It does not prove the part is defect-free."
+        )
+
+        if st.button("Save inspection record"):
+            if not part_id.strip():
+                st.error("Please enter a Part ID.")
+            else:
+                record = {
+                    "Date": datetime.now().strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
+                    "Part ID": part_id.strip(),
+                    "Inspector": inspector.strip(),
+                    "Production line": line_name.strip(),
+                    "AI description": st.session_state.caption,
+                    "Observations": ", ".join(observations)
+                    if observations else "None recorded",
+                    "Severity": severity,
+                    "Review status": review_status,
+                    "Notes": review_notes
+                }
+
+                st.session_state.history.append(record)
+                st.session_state.last_record = record
+
+                st.success("Inspection record saved for this session.")
+
+        if "last_record" in st.session_state:
+            record = st.session_state.last_record
+
+            report = f"""
+FORGESIGHT AI — INSPECTION REPORT
+
+Date: {record['Date']}
+Part ID: {record['Part ID']}
+Inspector: {record['Inspector']}
+Production line: {record['Production line']}
+
+AI-GENERATED IMAGE DESCRIPTION:
+{record['AI description']}
+
+HUMAN-RECORDED OBSERVATIONS:
+{record['Observations']}
+
+Observed severity: {record['Severity']}
+Review status: {record['Review status']}
+
+Inspector notes:
+{record['Notes']}
+
+LIMITATIONS:
+The AI generated a general image description.
+It did not confirm the presence or absence of defects.
+No automated pass/fail decision was made.
+Follow applicable manufacturing inspection procedures.
+"""
+
+            st.download_button(
+                "Download inspection report",
+                data=report,
+                file_name=f"{record['Part ID']}_inspection.txt",
+                mime="text/plain"
+            )
+
 else:
-    st.caption("Upload an image to begin.")
+    st.info("Upload a product image to begin.")
 
 st.divider()
-st.caption("ForgeSight AI | AI image analysis prototype")
+st.header("4. Inspection history")
+
+history = st.session_state.history
+
+if history:
+    df = pd.DataFrame(history)
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Records this session", len(df))
+
+    col2.metric(
+        "Pending review",
+        int((df["Review status"] == "Pending review").sum())
+    )
+
+    col3.metric(
+        "Records with observations",
+        int(
+            (
+                (df["Observations"] != "None recorded")
+                & (
+                    df["Observations"]
+                    != "No visible issue observed"
+                )
+            ).sum()
+        )
+    )
+
+    st.dataframe(df, use_container_width=True)
+
+    st.download_button(
+        "Export inspection history as CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="forgesight_inspection_history.csv",
+        mime="text/csv"
+    )
+
+else:
+    st.write("No inspection records saved in this session yet.")
+
+st.caption(
+    "ForgeSight AI | AI-assisted inspection prototype"
+)
+
+
 
 
    
