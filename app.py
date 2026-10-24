@@ -1,8 +1,11 @@
 
+
 import streamlit as st
 from PIL import Image
 from transformers import pipeline
+import torch
 from datetime import datetime
+
 
 st.set_page_config(
     page_title="ForgeSight AI",
